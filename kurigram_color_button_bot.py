@@ -23,6 +23,9 @@ import sys
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+# User ke chat state track karne ke liye (memory me, restart hone par reset ho jayega)
+user_states = {}
+
 # =========================================================
 # CONFIG -- yaha apni values daalo
 # (Environment variable set ho to wahi use hogi, warna neeche wali default)
@@ -97,6 +100,79 @@ async def start(client, message):
         MESSAGE_TEXT,
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+@app.on_message(filters.command("newpost"))
+async def newpost(client, message):
+    user_states[message.from_user.id] = {"step": "text", "buttons": []}
+    await message.reply_text(
+        "📝 Apna post banana shuru karte hain.\n\n"
+        "Pehle wo TEXT bhejo jo buttons ke UPAR dikhega:"
+    )
+
+
+@app.on_message(filters.text & ~filters.command(["start", "newpost"]))
+async def collect_input(client, message):
+    uid = message.from_user.id
+    if uid not in user_states:
+        return  # user /newpost flow me nahi hai, ignore karo
+
+    state = user_states[uid]
+    step = state["step"]
+
+    if step == "text":
+        state["text"] = message.text
+        state["step"] = "button_name"
+        await message.reply_text("🔘 Ab pehle button ka NAAM bhejo (jaise: Website):")
+
+    elif step == "button_name":
+        state["current_name"] = message.text
+        state["step"] = "button_url"
+        await message.reply_text("🔗 Ab is button ka URL bhejo (https:// se shuru hona chahiye):")
+
+    elif step == "button_url":
+        url = message.text.strip()
+        if not url.startswith("http"):
+            await message.reply_text("⚠️ URL http:// ya https:// se shuru honi chahiye. Dobara bhejo:")
+            return
+        state["buttons"].append((state["current_name"], url))
+        state["step"] = "ask_more"
+        await message.reply_text(
+            f"✅ Button '{state['current_name']}' add ho gaya.\n\nAur button add karna hai?",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("➕ Haan, aur button", callback_data="more_yes"),
+                InlineKeyboardButton("✅ Nahi, post banao", callback_data="more_no"),
+            ]])
+        )
+
+
+@app.on_callback_query(filters.regex("^more_"))
+async def handle_more(client, callback_query):
+    uid = callback_query.from_user.id
+    state = user_states.get(uid)
+    if not state:
+        await callback_query.answer("Session expire ho gaya, /newpost dobara bhejo.", show_alert=True)
+        return
+
+    if callback_query.data == "more_yes":
+        state["step"] = "button_name"
+        await callback_query.message.edit_text("🔘 Agle button ka NAAM bhejo:")
+    else:
+        # Final post bana kar bhejo, user isse forward/share kar sakta hai
+        keyboard = [[InlineKeyboardButton(name, url=url)] for name, url in state["buttons"]]
+        await callback_query.message.delete()
+        await client.send_message(
+            uid,
+            state["text"],
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        await client.send_message(
+            uid,
+            "👆 Aapka post ready hai! Isse apne channel/group me forward ya share kar sakte ho."
+        )
+        del user_states[uid]
+
+    await callback_query.answer()
 
 
 if __name__ == "__main__":
