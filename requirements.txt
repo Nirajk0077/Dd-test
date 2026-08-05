@@ -1,2 +1,2 @@
-kurigram
+aiogram
 tgcrypto
