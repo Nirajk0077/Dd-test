@@ -50,10 +50,10 @@ MESSAGE_TEXT = "Click button 👇"
 #   - Ek row me ek hi button = alag list
 #   - Ek row me 2+ buttons = same list ke andar, wo side-by-side (same line) dikhenge
 BUTTONS = [
-    [("Website", "https://example.com", "success")],     # 🟢 Green (apni row)
-    [("YouTube", "https://youtube.com", "primary"),        # 🔵 Blue   \__ ye dono
-     ("Instagram", "https://instagram.com", "danger")],    # 🔴 Red    /   same line pe
-    [("More Info", "https://example.com/info", None)],     # Default color, naya row
+    [("Website", "https://example.com", "success")],       # 🟢 Green
+    [("YouTube", "https://youtube.com", "success"),          # 🟢 Green  \__ ye dono
+     ("Instagram", "https://instagram.com", "success")],     # 🟢 Green  /   same line pe
+    [("More Info", "https://example.com/info", "success")],  # 🟢 Green, naya row
 ]
 # =========================================================
 
@@ -199,15 +199,41 @@ async def collect_input(client, message):
         if not url.startswith("http"):
             await message.reply_text("⚠️ URL http:// ya https:// se shuru honi chahiye. Dobara bhejo:")
             return
-        state["buttons"].append((state["current_name"], url))
-        state["step"] = "ask_more"
+        state["current_url"] = url
+        state["step"] = "choose_color"
         await message.reply_text(
-            f"✅ Button '{state['current_name']}' add ho gaya.\n\nAur button add karna hai?",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("➕ Haan, aur button", callback_data="more_yes"),
-                InlineKeyboardButton("✅ Nahi, post banao", callback_data="more_no"),
-            ]])
+            "🎨 Is button ka COLOR choose karo:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🟢 Green", callback_data="color_success")],
+                [InlineKeyboardButton("🔵 Blue", callback_data="color_primary")],
+                [InlineKeyboardButton("🔴 Red", callback_data="color_danger")],
+                [InlineKeyboardButton("⚪ Default", callback_data="color_none")],
+            ])
         )
+
+
+@app.on_callback_query(filters.regex("^color_"))
+async def handle_color(client, callback_query):
+    uid = callback_query.from_user.id
+    state = user_states.get(uid)
+    if not state or "current_url" not in state:
+        await callback_query.answer("Session expire ho gaya, /newpost dobara bhejo.", show_alert=True)
+        return
+
+    style_map = {"color_success": "success", "color_primary": "primary",
+                 "color_danger": "danger", "color_none": None}
+    style = style_map[callback_query.data]
+
+    state["buttons"].append((state["current_name"], state["current_url"], style))
+    state["step"] = "ask_more"
+    await callback_query.message.edit_text(
+        f"✅ Button '{state['current_name']}' add ho gaya.\n\nAur button add karna hai?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("➕ Haan, aur button", callback_data="more_yes"),
+            InlineKeyboardButton("✅ Nahi, post banao", callback_data="more_no"),
+        ]])
+    )
+    await callback_query.answer()
 
 
 @app.on_callback_query(filters.regex("^more_"))
@@ -222,7 +248,10 @@ async def handle_more(client, callback_query):
         state["step"] = "button_name"
         await callback_query.message.edit_text("🔘 Agle button ka NAAM bhejo:")
     else:
-        keyboard = [[InlineKeyboardButton(name, url=url)] for name, url in state["buttons"]]
+        keyboard = [
+            [InlineKeyboardButton(name, url=url, style=style)]
+            for name, url, style in state["buttons"]
+        ]
         state["final_keyboard"] = keyboard
         channels = CONNECTED_CHANNELS.get(uid, [])
 
