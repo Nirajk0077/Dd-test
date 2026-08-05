@@ -26,6 +26,10 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 # User ke chat state track karne ke liye (memory me, restart hone par reset ho jayega)
 user_states = {}
 
+# User ne jo channels connect kiye hain (memory me hi hai, restart pe reset hoga)
+# Structure: { user_id: [ {"id": -1001234, "title": "My Channel"}, ... ] }
+CONNECTED_CHANNELS = {}
+
 # =========================================================
 # CONFIG -- yaha apni values daalo
 # (Environment variable set ho to wahi use hogi, warna neeche wali default)
@@ -102,6 +106,29 @@ async def start(client, message):
     )
 
 
+@app.on_message(filters.command("addchannel"))
+async def addchannel_cmd(client, message):
+    user_states[message.from_user.id] = {"step": "add_channel"}
+    await message.reply_text(
+        "📢 Channel connect karne ke steps:\n\n"
+        "1) Bot ko us channel me ADMIN banao (post karne ki permission ke saath)\n"
+        "2) Yaha channel ka username bhejo (jaise @mychannel)\n"
+        "   Private channel ho to uski numeric ID bhejo (-100 se shuru hoti hai)\n"
+    )
+
+
+@app.on_message(filters.command("mychannels"))
+async def mychannels_cmd(client, message):
+    channels = CONNECTED_CHANNELS.get(message.from_user.id, [])
+    if not channels:
+        await message.reply_text("Abhi koi channel connect nahi hai. /addchannel use karo.")
+        return
+    text = "📋 Aapke connected channels:\n\n"
+    text += "\n".join(f"• {c['title']}" for c in channels)
+    await message.reply_text(text)
+
+
+
 @app.on_message(filters.command("newpost"))
 async def newpost(client, message):
     user_states[message.from_user.id] = {"step": "text", "buttons": []}
@@ -111,7 +138,7 @@ async def newpost(client, message):
     )
 
 
-@app.on_message(filters.text & ~filters.command(["start", "newpost"]))
+@app.on_message(filters.text & ~filters.command(["start", "newpost", "addchannel", "mychannels"]))
 async def collect_input(client, message):
     uid = message.from_user.id
     if uid not in user_states:
@@ -119,6 +146,33 @@ async def collect_input(client, message):
 
     state = user_states[uid]
     step = state["step"]
+
+    if step == "add_channel":
+        chat_ref = message.text.strip()
+        try:
+            chat = await client.get_chat(chat_ref)
+            me = await client.get_me()
+            member = await client.get_chat_member(chat.id, me.id)
+            if member.status.value not in ("administrator", "creator"):
+                await message.reply_text(
+                    "⚠️ Bot is channel me ADMIN nahi hai. Pehle channel settings me "
+                    "jaakar bot ko admin banao (post karne ki permission ke saath), "
+                    "phir /addchannel se dobara try karo."
+                )
+                return
+
+            CONNECTED_CHANNELS.setdefault(uid, [])
+            if not any(c["id"] == chat.id for c in CONNECTED_CHANNELS[uid]):
+                CONNECTED_CHANNELS[uid].append({"id": chat.id, "title": chat.title})
+            await message.reply_text(f"✅ Channel '{chat.title}' connect ho gaya!")
+        except Exception as e:
+            await message.reply_text(
+                f"❌ Channel nahi mila ya access nahi hai.\n"
+                f"Check karo: username sahi hai? Bot us channel me admin hai?\n\n"
+                f"(Error: {e})"
+            )
+        del user_states[uid]
+        return
 
     if step == "text":
         state["text"] = message.text
@@ -158,20 +212,60 @@ async def handle_more(client, callback_query):
         state["step"] = "button_name"
         await callback_query.message.edit_text("🔘 Agle button ka NAAM bhejo:")
     else:
-        # Final post bana kar bhejo, user isse forward/share kar sakta hai
         keyboard = [[InlineKeyboardButton(name, url=url)] for name, url in state["buttons"]]
-        await callback_query.message.delete()
-        await client.send_message(
-            uid,
-            state["text"],
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        await client.send_message(
-            uid,
-            "👆 Aapka post ready hai! Isse apne channel/group me forward ya share kar sakte ho."
-        )
-        del user_states[uid]
+        state["final_keyboard"] = keyboard
+        channels = CONNECTED_CHANNELS.get(uid, [])
 
+        if channels:
+            # Konse connected channel me post karna hai, wo choose karwao
+            chan_buttons = [
+                [InlineKeyboardButton(f"📢 {c['title']}", callback_data=f"postto_{c['id']}")]
+                for c in channels
+            ]
+            chan_buttons.append([InlineKeyboardButton("📩 Mujhe DM me bhejo", callback_data="postto_dm")])
+            await callback_query.message.edit_text(
+                "📍 Ye post KIS channel me karna hai? Neeche se choose karo:",
+                reply_markup=InlineKeyboardMarkup(chan_buttons)
+            )
+        else:
+            # Koi channel connect nahi hai, seedha DM me bhej do
+            await callback_query.message.delete()
+            await client.send_message(uid, state["text"], reply_markup=InlineKeyboardMarkup(keyboard))
+            await client.send_message(
+                uid,
+                "👆 Aapka post ready hai! Seedha channel me post karwane ke liye "
+                "/addchannel se apna channel connect karo."
+            )
+            del user_states[uid]
+
+    await callback_query.answer()
+
+
+@app.on_callback_query(filters.regex("^postto_"))
+async def handle_postto(client, callback_query):
+    uid = callback_query.from_user.id
+    state = user_states.get(uid)
+    if not state or "final_keyboard" not in state:
+        await callback_query.answer("Session expire ho gaya, /newpost dobara bhejo.", show_alert=True)
+        return
+
+    target = callback_query.data.split("_", 1)[1]
+    markup = InlineKeyboardMarkup(state["final_keyboard"])
+
+    try:
+        if target == "dm":
+            await client.send_message(uid, state["text"], reply_markup=markup)
+            await callback_query.message.edit_text("✅ Post aapko DM me bhej diya gaya.")
+        else:
+            chat_id = int(target)
+            await client.send_message(chat_id, state["text"], reply_markup=markup)
+            await callback_query.message.edit_text("✅ Post channel me successfully daal diya gaya!")
+    except Exception as e:
+        await callback_query.message.edit_text(
+            f"❌ Post nahi ho paya. Check karo bot admin hai ya nahi.\n(Error: {e})"
+        )
+
+    del user_states[uid]
     await callback_query.answer()
 
 
