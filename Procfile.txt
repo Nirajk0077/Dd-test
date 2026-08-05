@@ -1,1 +1,1 @@
-worker: python kurigram_color_button_bot.py
+web: python kurigram_color_button_bot.py
