@@ -38,15 +38,17 @@ from aiogram.exceptions import TelegramBadRequest
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")   # @BotFather se
 
 # Apna khud ka text yaha likho (emoji bhi daal sakte ho)
-MESSAGE_TEXT = "Click button 👇"
+MESSAGE_TEXT = (
+    "👋 Namaste!\n\n"
+    "Latest updates, movies aur exclusive content ke liye "
+    "neeche diye buttons se hamare Channel aur Group se judo 👇"
+)
 
 # Har button: (button_text, url, style)
 # style options: "success" (green), "primary" (blue), "danger" (red), None (default)
 BUTTONS = [
-    [("Website", "https://example.com", "success")],        # 🟢 Green
-    [("YouTube", "https://youtube.com", "success"),           # 🟢 Green  \__ same line
-     ("Instagram", "https://instagram.com", "success")],      # 🟢 Green  /
-    [("More Info", "https://example.com/info", "success")],   # 🟢 Green, naya row
+    [("📢 Channel", "https://t.me/Deendayal_dhakadd", "success")],
+    [("👥 Group", "https://t.me/Deendayal_dhakadd", "success")],
 ]
 # =========================================================
 
