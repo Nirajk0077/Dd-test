@@ -20,6 +20,8 @@ ki exactly kya theek karna hai — crash ho kar confusing error nahi dega.
 
 import os
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -277,7 +279,31 @@ async def handle_postto(client, callback_query):
     await callback_query.answer()
 
 
+def run_dummy_server():
+    """
+    Render/Koyeb ke FREE Web Service plan ko ek open port chahiye hota hai,
+    warna wo deploy ko 'Live' nahi karte (bhale hi bot khud kaam kar raha ho).
+    Ye ek chhota sa HTTP server hai jo sirf "Bot is running" reply karta hai
+    taaki hosting platform ka port-scan pass ho jaye. Isse bot ke kaam pe koi
+    farak nahi padta.
+    """
+    port = int(os.environ.get("PORT", 8080))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is running")
+
+        def log_message(self, format, *args):
+            pass  # terminal me extra HTTP logs na aayein
+
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
+    threading.Thread(target=run_dummy_server, daemon=True).start()
     print("✅ Config theek hai. Bot start ho raha hai...")
     print("   Telegram par apne bot ko /start bhejo.")
     print("   Rokne ke liye Ctrl+C dabao.\n")
