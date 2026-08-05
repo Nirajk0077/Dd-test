@@ -111,9 +111,11 @@ async def addchannel_cmd(client, message):
     user_states[message.from_user.id] = {"step": "add_channel"}
     await message.reply_text(
         "📢 Channel connect karne ke steps:\n\n"
-        "1) Bot ko us channel me ADMIN banao (post karne ki permission ke saath)\n"
-        "2) Yaha channel ka username bhejo (jaise @mychannel)\n"
-        "   Private channel ho to uski numeric ID bhejo (-100 se shuru hoti hai)\n"
+        "1) Bot ko us channel me ADMIN banao (post karne ki permission ke saath)\n\n"
+        "2a) Agar channel PUBLIC hai: yaha uska username bhejo (jaise @mychannel)\n\n"
+        "2b) Agar channel PRIVATE hai: us channel me jaakar koi bhi ek message "
+        "yaha is chat me FORWARD kardo (ID type karne se kaam nahi karega, "
+        "bot ko chat 'dekhne' ke liye forward chahiye)"
     )
 
 
@@ -138,7 +140,7 @@ async def newpost(client, message):
     )
 
 
-@app.on_message(filters.text & ~filters.command(["start", "newpost", "addchannel", "mychannels"]))
+@app.on_message((filters.text | filters.forwarded) & ~filters.command(["start", "newpost", "addchannel", "mychannels"]))
 async def collect_input(client, message):
     uid = message.from_user.id
     if uid not in user_states:
@@ -148,9 +150,14 @@ async def collect_input(client, message):
     step = state["step"]
 
     if step == "add_channel":
-        chat_ref = message.text.strip()
         try:
-            chat = await client.get_chat(chat_ref)
+            if message.forward_from_chat:
+                # Private channel se forward kiya gaya message -> seedha chat info mil gaya
+                chat = message.forward_from_chat
+            else:
+                chat_ref = message.text.strip()
+                chat = await client.get_chat(chat_ref)
+
             me = await client.get_me()
             member = await client.get_chat_member(chat.id, me.id)
             if member.status.value not in ("administrator", "creator"):
@@ -167,8 +174,9 @@ async def collect_input(client, message):
             await message.reply_text(f"✅ Channel '{chat.title}' connect ho gaya!")
         except Exception as e:
             await message.reply_text(
-                f"❌ Channel nahi mila ya access nahi hai.\n"
-                f"Check karo: username sahi hai? Bot us channel me admin hai?\n\n"
+                f"❌ Channel connect nahi ho paya.\n"
+                f"Public channel ho to @username check karo. Private ho to koi "
+                f"message us channel se yaha FORWARD karo.\n\n"
                 f"(Error: {e})"
             )
         del user_states[uid]
