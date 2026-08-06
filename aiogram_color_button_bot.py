@@ -31,11 +31,13 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # =========================================================
 # CONFIG -- yaha apni values daalo
 # =========================================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")   # @BotFather se
+MONGO_URI = os.environ.get("MONGO_URI", "")   # MongoDB connection string (optional par recommended)
 
 # Apna khud ka text yaha likho (emoji bhi daal sakte ho)
 MESSAGE_TEXT = (
@@ -48,7 +50,7 @@ MESSAGE_TEXT = (
 # style options: "success" (green), "primary" (blue), "danger" (red), None (default)
 BUTTONS = [
     [("📢 Channel", "https://t.me/Deendayal_dhakadd", "success")],
-    [("👥 Group", "https://t.me/Deendayal_dhakadd", "primary")],
+    [("👥 Group", "https://t.me/Deendayal_dhakadd", "success")],
 ]
 # =========================================================
 
@@ -63,9 +65,36 @@ dp = Dispatcher()
 # User ke chat state track karne ke liye (memory me, restart hone par reset ho jayega)
 user_states = {}
 
-# User ne jo channels connect kiye hain (memory me hi hai, restart pe reset hoga)
+# User ne jo channels connect kiye hain (memory me cache, MongoDB se load hota hai)
 # Structure: { user_id: [ {"id": -1001234, "title": "My Channel"}, ... ] }
 CONNECTED_CHANNELS = {}
+
+channels_collection = None  # MongoDB connect hone ke baad set hoga
+
+
+async def init_db():
+    """MongoDB se connect karo aur pehle se saved channels memory me load karo."""
+    global channels_collection
+    if not MONGO_URI:
+        print("⚠️ MONGO_URI nahi diya gaya - channels sirf memory me rahenge "
+              "(restart hone par dobara /addchannel karna padega).")
+        return
+
+    try:
+        client = AsyncIOMotorClient(MONGO_URI)
+        db = client["telegram_bot"]
+        channels_collection = db["channels"]
+
+        count = 0
+        async for doc in channels_collection.find():
+            CONNECTED_CHANNELS.setdefault(doc["user_id"], [])
+            CONNECTED_CHANNELS[doc["user_id"]].append({"id": doc["channel_id"], "title": doc["title"]})
+            count += 1
+
+        print(f"✅ MongoDB connect ho gaya. {count} saved channel(s) load ho gaye.")
+    except Exception as e:
+        print(f"❌ MongoDB se connect nahi ho paya: {e}")
+        print("   Channels sirf memory me rahenge (restart pe reset honge).")
 
 
 # ---------------------------------------------------------
@@ -150,6 +179,15 @@ async def collect_input(message: Message):
             CONNECTED_CHANNELS.setdefault(uid, [])
             if not any(c["id"] == chat.id for c in CONNECTED_CHANNELS[uid]):
                 CONNECTED_CHANNELS[uid].append({"id": chat.id, "title": chat.title})
+
+            # MongoDB me bhi save karo taaki restart ke baad bhi yaad rahe
+            if channels_collection is not None:
+                await channels_collection.update_one(
+                    {"user_id": uid, "channel_id": chat.id},
+                    {"$set": {"user_id": uid, "channel_id": chat.id, "title": chat.title}},
+                    upsert=True
+                )
+
             await message.answer(f"✅ Channel '{chat.title}' connect ho gaya!")
         except Exception as e:
             await message.answer(
@@ -161,7 +199,10 @@ async def collect_input(message: Message):
         return
 
     if step == "text":
-        state["text"] = message.text
+        # message.html_text formatting preserve karta hai jo user ne apply ki ho
+        # (bold, italic, spoiler, quote, code/copy-able block, wagera).
+        # Poora text by-default BOLD rakha ja raha hai.
+        state["text"] = f"<b>{message.html_text}</b>"
         state["step"] = "button_name"
         await message.answer("🔘 Ab pehle button ka NAAM bhejo (jaise: Website):")
 
@@ -229,33 +270,35 @@ async def handle_more(callback: CallbackQuery):
     if callback.data == "more_yes":
         state["step"] = "button_name"
         await callback.message.edit_text("🔘 Agle button ka NAAM bhejo:")
-    else:
-        keyboard = [
-            [InlineKeyboardButton(text=name, url=url, style=style)]
-            for name, url, style in state["buttons"]
-        ]
-        state["final_keyboard"] = keyboard
-        channels = CONNECTED_CHANNELS.get(uid, [])
+        await callback.answer()
+        return
 
-        if channels:
-            chan_buttons = [
-                [InlineKeyboardButton(text=f"📢 {c['title']}", callback_data=f"postto_{c['id']}")]
-                for c in channels
-            ]
-            chan_buttons.append([InlineKeyboardButton(text="📩 Mujhe DM me bhejo", callback_data="postto_dm")])
-            await callback.message.edit_text(
-                "📍 Ye post KIS channel me karna hai? Neeche se choose karo:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=chan_buttons)
-            )
-        else:
-            await callback.message.delete()
-            await bot.send_message(uid, state["text"], reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-            await bot.send_message(
-                uid,
-                "👆 Aapka post ready hai! Seedha channel me post karwane ke liye "
-                "/addchannel se apna channel connect karo."
-            )
-            del user_states[uid]
+    keyboard = [
+        [InlineKeyboardButton(text=name, url=url, style=style)]
+        for name, url, style in state["buttons"]
+    ]
+    state["final_keyboard"] = keyboard
+    channels = CONNECTED_CHANNELS.get(uid, [])
+
+    if channels:
+        chan_buttons = [
+            [InlineKeyboardButton(text=f"📢 {c['title']}", callback_data=f"postto_{c['id']}")]
+            for c in channels
+        ]
+        chan_buttons.append([InlineKeyboardButton(text="📩 Mujhe DM me bhejo", callback_data="postto_dm")])
+        await callback.message.edit_text(
+            "📍 Ye post KIS channel me karna hai? Neeche se choose karo:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=chan_buttons)
+        )
+    else:
+        await callback.message.delete()
+        await bot.send_message(uid, state["text"], reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
+        await bot.send_message(
+            uid,
+            "👆 Aapka post ready hai! Seedha channel me post karwane ke liye "
+            "/addchannel se apna channel connect karo."
+        )
+        del user_states[uid]
 
     await callback.answer()
 
@@ -276,11 +319,11 @@ async def handle_postto(callback: CallbackQuery):
 
     try:
         if target == "dm":
-            await bot.send_message(uid, state["text"], reply_markup=markup)
+            await bot.send_message(uid, state["text"], reply_markup=markup, parse_mode="HTML")
             await callback.message.edit_text("✅ Post aapko DM me bhej diya gaya.")
         else:
             chat_id = int(target)
-            await bot.send_message(chat_id, state["text"], reply_markup=markup)
+            await bot.send_message(chat_id, state["text"], reply_markup=markup, parse_mode="HTML")
             await callback.message.edit_text("✅ Post channel me successfully daal diya gaya!")
     except TelegramBadRequest as e:
         await callback.message.edit_text(
@@ -310,6 +353,7 @@ def run_dummy_server():
 
 
 async def main():
+    await init_db()
     print("✅ Bot start ho raha hai...")
     print("   Telegram par apne bot ko /start bhejo.")
     await dp.start_polling(bot)
