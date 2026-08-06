@@ -50,7 +50,7 @@ MESSAGE_TEXT = (
 # style options: "success" (green), "primary" (blue), "danger" (red), None (default)
 BUTTONS = [
     [("📢 Channel", "https://t.me/Deendayal_dhakadd", "success")],
-    [("👥 Group", "https://t.me/Deendayal_dhakadd", "success")],
+    [("👥 Group", "https://t.me/Deendayal_dhakadd", "primary")],
 ]
 # =========================================================
 
